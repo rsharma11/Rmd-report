@@ -2,7 +2,9 @@
 title: "Classification of Breast Cancer condition"
 author: "Ranu Sharma"
 date: "10/28/2018"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -31,16 +33,120 @@ Missing attribute values: none
 
 Class distribution: **357 benign, 212 malignant**
 
-```{r cars}
-summary(cars)
+## Loading libraries
+
+```{r libraries, echo=FALSE}
+library(ggplot2) 
+library(tibble)
+library(readr)
+library(data.table)
+library(Hmisc)
+library(plyr)
+library(dplyr)
+library(caret)
+library(caretEnsemble)
+library(ggthemes)
+library(scales)
+library(MLmetrics)
+library(gbm)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r pressure}
+data <- read.csv("/Users/vimal/Machine-learning/breast_cancer/data.csv")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r file load}
+str(data)
+data <- data %>% select(-X)
+data %>% as.tibble()
+```
+
+##Pre-processing
+*Finding NA values*
+```{r NA find}
+any(is.na(data)) 
+```
+
+*Centering and scaling numerical columns*
+```{r normalization}
+preProcValues <- preProcess(data, method = c("BoxCox", "center", "scale", "spatialSign"))
+train_processed <- predict(preProcValues, data)
+```
+
+*Converting outcome variable to numeric*
+```{r editing1}
+train_processed$diagnosis<-ifelse(train_processed$diagnosis=='M',0,1)
+str(train_processed)
+```
+
+*Converting the dependent variable back to categorical*
+```{r editing2}
+train_processed$diagnosis<-as.factor(train_processed$diagnosis)
+```
+
+*Spliting training set into two parts based on outcome: 75% and 25%*
+```{r data splitting}
+index <- createDataPartition(train_processed$diagnosis, p=0.75, list=FALSE)
+trainSet <- train_processed[ index,]
+testSet <- train_processed[-index,]
+```
+
+*Checking the structure of trainSet & testSet*
+```{r data structure}
+str(trainSet)
+str(testSet)
+```
+
+*Feature selection using rfe in caret*
+```{r feature selection}
+control <- rfeControl(functions = rfFuncs,
+                      method = "repeatedcv",
+                      repeats = 3,
+                      verbose = FALSE)
+outcomeName<-'diagnosis'
+predictors<-names(trainSet)[!names(trainSet) %in% outcomeName]
+Diagnosis_Pred_Profile <- rfe(trainSet[,predictors], trainSet[,outcomeName],
+                         rfeControl = control)
+Diagnosis_Pred_Profile
+
+predictors<-c("perimeter_worst", "concave.points_worst", "area_worst", "radius_worst", "texture_worst")
+```
+
+##Model building
+*Gradient boosting*
+```{r gradient boost model building}
+fitControl <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+
+model_gbm<-train(trainSet[,predictors],trainSet[,outcomeName],method='gbm',trControl=fitControl,tuneLength=10)
+model_gbm_all_features<-train(trainSet[,2:31],trainSet[,outcomeName],method='gbm',trControl=fitControl,tuneLength=10)
+
+plot(model_gbm)
+
+varImp(object=model_gbm)
+plot(varImp(object=model_gbm),main="GBM - Variable Importance")
+
+predictions1<-predict.train(object=model_gbm,testSet[,predictors],type="raw")
+table(predictions1)
+confusionMatrix(predictions1,testSet[,outcomeName])
+```
+
+##SVM model building
+```{r svm model building}
+fitcontrol <- trainControl(method="repeatedcv", number=10, repeats=3)
+metric <- "Accuracy"
+levels(trainSet$diagnosis) <- c("Malignant", "Benign")
+levels(testSet$diagnosis) <- c("Malignant", "Benign")
+
+svm_fit <- train(trainSet[,predictors],trainSet[,outcomeName], 
+                     data=trainSet, 
+                     method = "svmRadial", 
+                     trControl = fitControl, 
+                     preProc = c("center", "scale"),
+                     tuneLength = 8,
+                     metric = metric)
+
+predictions_svm<-predict.train(object=svm_fit,testSet[,predictors])
+Accuracy(predictions_svm, testSet$diagnosis)
+table(predictions_svm)
+confusionMatrix(predictions_svm,testSet$diagnosis)
+```
